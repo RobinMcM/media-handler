@@ -20,8 +20,17 @@ case "$COMMAND" in
       exit 1
     fi
     
-    # Extract output filename FIRST (before shifting)
-    OUTPUT_NAME="${!#}"
+    # DEBUG: Log all arguments received (POSIX-compliant)
+    echo "DEBUG concat: received $# arguments: $@" >&2
+    
+    # Extract output filename FIRST (before shifting) - POSIX compliant way
+    # Iterate through args and keep the last one
+    OUTPUT_NAME=""
+    for arg in "$@"; do
+      OUTPUT_NAME="$arg"
+    done
+    
+    echo "DEBUG concat: parsed output filename: '$OUTPUT_NAME'" >&2
     
     # Validate output filename is not empty
     if [ -z "$OUTPUT_NAME" ]; then
@@ -29,13 +38,19 @@ case "$COMMAND" in
       exit 1
     fi
     
-    # Validate output has an extension
-    if [[ ! "$OUTPUT_NAME" =~ \.[a-zA-Z0-9]+$ ]]; then
-      echo "Error: output filename must have an extension (e.g., .mp4)" >&2
-      exit 1
-    fi
+    # Validate output has an extension (POSIX-compliant regex)
+    case "$OUTPUT_NAME" in
+      *.*) 
+        # Has at least one dot, assume it's an extension
+        ;;
+      *)
+        echo "Error: output filename must have an extension (e.g., .mp4)" >&2
+        exit 1
+        ;;
+    esac
     
     OUTPUT="/videos/$OUTPUT_NAME"
+    echo "DEBUG concat: full output path: '$OUTPUT'" >&2
     
     # First pass: collect inputs and detect audio presence
     INPUTS=""

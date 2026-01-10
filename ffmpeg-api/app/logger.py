@@ -153,7 +153,10 @@ def log_request(endpoint: str, job_id: str):
 def log_docker_command(job_id: str, command: List[str]):
     """Log docker command execution (sanitized)"""
     sanitized_cmd = sanitize_command(command)
+    # Also log array representation for debugging argument parsing
+    cmd_repr = repr([arg if not arg.startswith('/') else '[PATH]' for arg in command])
     logger.info(f"job={job_id} command={sanitized_cmd}")
+    logger.info(f"job={job_id} command_array={cmd_repr}")
 
 
 def log_success(job_id: str, output_file: str):
