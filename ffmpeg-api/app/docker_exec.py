@@ -28,7 +28,7 @@ def execute_ffmpeg_command(command: List[str], input_files: List[str]) -> Tuple[
         docker_cmd = [
             "docker", "run", "--rm",
             "-v", f"{job_dir}:/videos",
-            "video-stitcher"
+            "media-handler"
         ] + command
         
         print(f"Executing: {' '.join(docker_cmd)}")
