@@ -168,11 +168,12 @@ async def get_instructions(api_key: str = Depends(verify_api_key)):
             name="concat_spaces",
             method="POST",
             path="/api/ffmpeg/concat_spaces",
-            description="Concatenate two videos from DigitalOcean Spaces",
+            description="Concatenate 2 or more videos from DigitalOcean Spaces",
             request_body={
                 "inputs": [
                     {"spaces_key": "path/to/input1.mp4"},
-                    {"spaces_key": "path/to/input2.mp4"}
+                    {"spaces_key": "path/to/input2.mp4"},
+                    {"spaces_key": "path/to/input3.mp4"}
                 ],
                 "output": {"spaces_key": "path/to/output.mp4"}
             },
@@ -223,9 +224,9 @@ async def concat_videos_from_spaces(
     import shutil
     from pathlib import Path
     
-    # Validation: exactly 2 inputs required
-    if len(request.inputs) != 2:
-        return ErrorResponse(message="Exactly 2 inputs required for concat_spaces")
+    # Validation: at least 2 inputs required (no maximum limit)
+    if len(request.inputs) < 2:
+        return ErrorResponse(message="At least 2 inputs required for concat_spaces")
     
     # Validation: spaces_key cannot be empty, contain .., or start with /
     for inp in request.inputs:
@@ -262,8 +263,8 @@ async def concat_videos_from_spaces(
         # Download inputs from Spaces
         local_inputs = []
         for i, inp in enumerate(request.inputs):
-            # Use simple filenames: a.mp4, b.mp4
-            filename = f"{chr(97+i)}.mp4"  # 97 is 'a' in ASCII
+            # Use sequential filenames: input_0.mp4, input_1.mp4, etc. (supports any number)
+            filename = f"input_{i}.mp4"
             local_path = job_dir / filename
             
             try:
