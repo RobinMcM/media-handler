@@ -101,3 +101,18 @@ class LogsResponse(BaseModel):
     status: str = "ok"
     lines: int
     logs: List[str]
+
+
+class SpacesObjectRef(BaseModel):
+    spaces_key: str
+
+
+class ConcatSpacesRequest(BaseModel):
+    inputs: List[SpacesObjectRef]
+    output: SpacesObjectRef
+
+
+class ConcatSpacesResponse(BaseModel):
+    status: str = "ok"
+    output_key: str
+    output_url: Optional[str]

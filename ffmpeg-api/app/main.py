@@ -4,7 +4,8 @@ from app.schemas import (
     ConcatRequest, TrimRequest, ScaleRequest, CropRequest,
     RotateRequest, AudioRequest, OverlayRequest, WatermarkRequest,
     EncodeRequest, SuccessResponse, ErrorResponse,
-    InstructionsResponse, EndpointInfo, LogsResponse
+    InstructionsResponse, EndpointInfo, LogsResponse,
+    ConcatSpacesRequest, ConcatSpacesResponse
 )
 from app.ffmpeg import (
     build_concat_command, build_trim_command, build_scale_command,
@@ -12,7 +13,8 @@ from app.ffmpeg import (
     build_overlay_command, build_watermark_command, build_encode_command
 )
 from app.docker_exec import execute_ffmpeg_command, extract_input_files
-from app.logger import get_sanitized_logs
+from app.logger import get_sanitized_logs, log_request, log_success, log_error
+from app.spaces import download_key_to_path, upload_path_to_key, get_public_url
 
 
 app = FastAPI(title="FFmpeg API", version="1.0.0")
@@ -161,6 +163,25 @@ async def get_instructions(api_key: str = Depends(verify_api_key)):
             request_body=None,
             success_response={"status": "healthy"},
             error_response=None
+        ),
+        EndpointInfo(
+            name="concat_spaces",
+            method="POST",
+            path="/api/ffmpeg/concat_spaces",
+            description="Concatenate two videos from DigitalOcean Spaces",
+            request_body={
+                "inputs": [
+                    {"spaces_key": "path/to/input1.mp4"},
+                    {"spaces_key": "path/to/input2.mp4"}
+                ],
+                "output": {"spaces_key": "path/to/output.mp4"}
+            },
+            success_response={
+                "status": "ok",
+                "output_key": "path/to/output.mp4",
+                "output_url": "https://bucket.region.digitaloceanspaces.com/path/to/output.mp4"
+            },
+            error_response={"status": "error", "message": "Error description"}
         )
     ]
     
@@ -187,6 +208,140 @@ async def get_logs(
     logs = get_sanitized_logs(lines)
     
     return LogsResponse(lines=len(logs), logs=logs)
+
+
+@app.post("/api/ffmpeg/concat_spaces", response_model=ConcatSpacesResponse | ErrorResponse)
+async def concat_videos_from_spaces(
+    request: ConcatSpacesRequest,
+    api_key: str = Depends(verify_api_key)
+):
+    """
+    Concatenate two videos from DigitalOcean Spaces.
+    Downloads inputs from Spaces, runs local concat, uploads result back to Spaces.
+    """
+    import uuid
+    import shutil
+    from pathlib import Path
+    
+    # Validation: exactly 2 inputs required
+    if len(request.inputs) != 2:
+        return ErrorResponse(message="Exactly 2 inputs required for concat_spaces")
+    
+    # Validation: spaces_key cannot be empty, contain .., or start with /
+    for inp in request.inputs:
+        if not inp.spaces_key or not inp.spaces_key.strip():
+            return ErrorResponse(message="Input spaces_key cannot be empty")
+        if ".." in inp.spaces_key or inp.spaces_key.startswith("/"):
+            return ErrorResponse(message="Invalid spaces_key: cannot contain '..' or start with '/'")
+    
+    if not request.output.spaces_key or not request.output.spaces_key.strip():
+        return ErrorResponse(message="Output spaces_key cannot be empty")
+    if ".." in request.output.spaces_key or request.output.spaces_key.startswith("/"):
+        return ErrorResponse(message="Invalid output spaces_key: cannot contain '..' or start with '/'")
+    
+    # Validation: check video file extensions
+    allowed_extensions = {".mp4", ".mov", ".m4v", ".webm"}
+    for inp in request.inputs:
+        ext = Path(inp.spaces_key).suffix.lower()
+        if ext not in allowed_extensions:
+            return ErrorResponse(message=f"Invalid input file extension: {ext}. Allowed: {', '.join(allowed_extensions)}")
+    
+    output_ext = Path(request.output.spaces_key).suffix.lower()
+    if output_ext not in allowed_extensions:
+        return ErrorResponse(message=f"Invalid output file extension: {output_ext}. Allowed: {', '.join(allowed_extensions)}")
+    
+    # Generate job ID and create temp directory
+    job_id = str(uuid.uuid4())
+    job_dir = Path("/tmp") / f"job-{job_id}"
+    
+    log_request("concat_spaces", job_id)
+    
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Download inputs from Spaces
+        local_inputs = []
+        for i, inp in enumerate(request.inputs):
+            # Use simple filenames: a.mp4, b.mp4
+            filename = f"{chr(97+i)}.mp4"  # 97 is 'a' in ASCII
+            local_path = job_dir / filename
+            
+            try:
+                download_key_to_path(inp.spaces_key, str(local_path))
+                local_inputs.append(filename)
+            except Exception as e:
+                log_error(job_id, f"Failed to download {inp.spaces_key}: {str(e)}")
+                return ErrorResponse(message=f"Failed to download input from Spaces: {str(e)}")
+        
+        # Prepare output filename
+        output_filename = "output.mp4"
+        
+        # Build concat command using existing builder
+        from app.ffmpeg import build_concat_command
+        from app.schemas import ConcatRequest as LocalConcatRequest
+        
+        local_concat_req = LocalConcatRequest(
+            inputs=local_inputs,
+            output=output_filename
+        )
+        command = build_concat_command(local_concat_req)
+        
+        # Execute FFmpeg via Docker (same as local concat endpoint)
+        # We need to manually execute here to use the job_dir we created
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{job_dir}:/videos",
+            "media-handler"
+        ] + command
+        
+        import subprocess
+        from app.logger import log_docker_command
+        
+        log_docker_command(job_id, docker_cmd)
+        
+        result = subprocess.run(
+            docker_cmd,
+            capture_output=True,
+            text=True,
+            timeout=3600
+        )
+        
+        output_path = job_dir / output_filename
+        
+        if result.returncode != 0 or not output_path.exists():
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            log_error(job_id, error_msg)
+            return ErrorResponse(message=f"FFmpeg concat failed: {error_msg[:200]}")
+        
+        # Upload result to Spaces
+        try:
+            upload_path_to_key(
+                str(output_path),
+                request.output.spaces_key,
+                content_type="video/mp4"
+            )
+        except Exception as e:
+            log_error(job_id, f"Failed to upload to Spaces: {str(e)}")
+            return ErrorResponse(message=f"Failed to upload output to Spaces: {str(e)}")
+        
+        # Generate public URL if configured
+        output_url = get_public_url(request.output.spaces_key)
+        
+        log_success(job_id, request.output.spaces_key)
+        
+        return ConcatSpacesResponse(
+            output_key=request.output.spaces_key,
+            output_url=output_url
+        )
+    
+    except Exception as e:
+        log_error(job_id, str(e))
+        return ErrorResponse(message=f"Unexpected error: {str(e)}")
+    
+    finally:
+        # Always cleanup job directory
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
 
 
 @app.post("/api/ffmpeg/concat", response_model=SuccessResponse | ErrorResponse)
