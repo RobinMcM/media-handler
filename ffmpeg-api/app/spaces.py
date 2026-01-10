@@ -88,11 +88,13 @@ def upload_path_to_key(local_path: str, spaces_key: str, content_type: Optional[
         raise FileNotFoundError(f"Local file not found: {local_path}")
     
     try:
-        extra_args = {}
+        extra_args = {
+            'ACL': 'public-read'  # Make uploaded files publicly accessible
+        }
         if content_type:
             extra_args['ContentType'] = content_type
         
-        client.upload_file(local_path, SPACES_BUCKET, spaces_key, ExtraArgs=extra_args if extra_args else None)
+        client.upload_file(local_path, SPACES_BUCKET, spaces_key, ExtraArgs=extra_args)
     except ClientError as e:
         error_code = e.response.get('Error', {}).get('Code', 'Unknown')
         raise RuntimeError(f"Failed to upload to Spaces: {error_code}")
