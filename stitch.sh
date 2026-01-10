@@ -20,8 +20,22 @@ case "$COMMAND" in
       exit 1
     fi
     
-    # Last argument is output
-    OUTPUT="/videos/${!#}"
+    # Extract output filename FIRST (before shifting)
+    OUTPUT_NAME="${!#}"
+    
+    # Validate output filename is not empty
+    if [ -z "$OUTPUT_NAME" ]; then
+      echo "Error: output filename cannot be empty" >&2
+      exit 1
+    fi
+    
+    # Validate output has an extension
+    if [[ ! "$OUTPUT_NAME" =~ \.[a-zA-Z0-9]+$ ]]; then
+      echo "Error: output filename must have an extension (e.g., .mp4)" >&2
+      exit 1
+    fi
+    
+    OUTPUT="/videos/$OUTPUT_NAME"
     
     # First pass: collect inputs and detect audio presence
     INPUTS=""
