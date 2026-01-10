@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
 
 
 class ConcatRequest(BaseModel):
@@ -78,3 +78,26 @@ class SuccessResponse(BaseModel):
 class ErrorResponse(BaseModel):
     status: str = "error"
     message: str
+
+
+class EndpointInfo(BaseModel):
+    name: str
+    method: str
+    path: str
+    description: str
+    request_body: Optional[Dict[str, Any]]
+    success_response: Dict[str, Any]
+    error_response: Optional[Dict[str, Any]]
+
+
+class InstructionsResponse(BaseModel):
+    status: str = "ok"
+    service: str = "ffmpeg-api"
+    auth: Dict[str, str] = Field(default_factory=lambda: {"header": "X-Internal-API-Key"})
+    endpoints: List[EndpointInfo]
+
+
+class LogsResponse(BaseModel):
+    status: str = "ok"
+    lines: int
+    logs: List[str]

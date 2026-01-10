@@ -4,6 +4,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Tuple
+from app.logger import log_request, log_docker_command, log_success, log_error
 
 
 SOURCE_DIR = os.getenv("SOURCE_DIR", "/source")
@@ -13,6 +14,9 @@ TEMP_BASE = "/tmp"
 def execute_ffmpeg_command(command: List[str], input_files: List[str]) -> Tuple[bool, str, str]:
     job_id = str(uuid.uuid4())
     job_dir = Path(TEMP_BASE) / f"job-{job_id}"
+    
+    # Log request received
+    log_request("ffmpeg", job_id)
     
     try:
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -31,6 +35,9 @@ def execute_ffmpeg_command(command: List[str], input_files: List[str]) -> Tuple[
             "media-handler"
         ] + command
         
+        # Log docker command (sanitized)
+        log_docker_command(job_id, docker_cmd)
+        
         print(f"Executing: {' '.join(docker_cmd)}")
         
         result = subprocess.run(
@@ -46,13 +53,18 @@ def execute_ffmpeg_command(command: List[str], input_files: List[str]) -> Tuple[
         if result.returncode == 0 and output_path.exists():
             final_output = Path(SOURCE_DIR) / output_file
             shutil.copy2(output_path, final_output)
+            log_success(job_id, output_file)
             return True, output_file, result.stdout
         else:
-            return False, "", result.stderr or result.stdout
+            error_msg = result.stderr or result.stdout
+            log_error(job_id, error_msg)
+            return False, "", error_msg
     
     except subprocess.TimeoutExpired:
+        log_error(job_id, "Command timed out after 1 hour")
         return False, "", "Command timed out after 1 hour"
     except Exception as e:
+        log_error(job_id, str(e))
         return False, "", str(e)
     finally:
         if job_dir.exists():
