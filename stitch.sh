@@ -92,6 +92,7 @@ case "$COMMAND" in
       done
       FILTER="${FILTER}concat=n=${COUNT}:v=1:a=1[v][a]"
       MAP_ARGS="-map [v] -map [a]"
+      ENCODE_OPTS="-c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p -c:a aac -b:a 128k"
     else
       # At least one input lacks audio: video-only concat
       IDX=0
@@ -101,10 +102,36 @@ case "$COMMAND" in
       done
       FILTER="${FILTER}concat=n=${COUNT}:v=1:a=0[v]"
       MAP_ARGS="-map [v]"
+      ENCODE_OPTS="-c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p"
     fi
     
-    echo "Executing: ffmpeg -y $INPUTS -filter_complex \"$FILTER\" $MAP_ARGS $OUTPUT"
-    ffmpeg -y $INPUTS -filter_complex "$FILTER" $MAP_ARGS "$OUTPUT"
+    echo "Executing: ffmpeg -y $INPUTS -filter_complex \"$FILTER\" $MAP_ARGS $ENCODE_OPTS $OUTPUT" >&2
+    ffmpeg -y $INPUTS -filter_complex "$FILTER" $MAP_ARGS $ENCODE_OPTS "$OUTPUT"
+    
+    # Validate output was created and has content
+    if [ ! -f "$OUTPUT" ]; then
+      echo "Error: Output file was not created: $OUTPUT" >&2
+      exit 1
+    fi
+    
+    OUTPUT_SIZE=$(stat -f%z "$OUTPUT" 2>/dev/null || stat -c%s "$OUTPUT" 2>/dev/null || echo "0")
+    echo "DEBUG concat: output file size: $OUTPUT_SIZE bytes" >&2
+    
+    if [ "$OUTPUT_SIZE" -eq 0 ]; then
+      echo "Error: Output file is empty (0 bytes)" >&2
+      exit 1
+    fi
+    
+    # Validate output duration
+    DURATION=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$OUTPUT" 2>/dev/null || echo "0")
+    echo "DEBUG concat: output duration: ${DURATION}s" >&2
+    
+    if [ "$DURATION" = "0" ] || [ "$DURATION" = "0.000000" ] || [ -z "$DURATION" ]; then
+      echo "Error: Output file has invalid duration: ${DURATION}s" >&2
+      exit 1
+    fi
+    
+    echo "Concat successful: $OUTPUT ($OUTPUT_SIZE bytes, ${DURATION}s)" >&2
     ;;
     
   trim)

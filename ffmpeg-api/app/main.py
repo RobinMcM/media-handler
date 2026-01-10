@@ -308,10 +308,58 @@ async def concat_videos_from_spaces(
         
         output_path = job_dir / output_filename
         
-        if result.returncode != 0 or not output_path.exists():
+        # DEBUG: Log all files in job directory before validation
+        import os
+        import logging
+        logger = logging.getLogger("ffmpeg-api")
+        try:
+            dir_contents = []
+            for f in os.listdir(job_dir):
+                fpath = job_dir / f
+                fsize = os.path.getsize(fpath) if os.path.isfile(fpath) else 0
+                dir_contents.append(f"{f} ({fsize} bytes)")
+            logger.info(f"job={job_id} job_dir_contents={', '.join(dir_contents)}")
+        except Exception as e:
+            logger.warning(f"job={job_id} failed_to_list_dir error={str(e)}")
+        
+        # Validate FFmpeg execution
+        if result.returncode != 0:
             error_msg = result.stderr or result.stdout or "Unknown error"
             log_error(job_id, error_msg)
             return ErrorResponse(message=f"FFmpeg concat failed: {error_msg[:200]}")
+        
+        if not output_path.exists():
+            log_error(job_id, "Output file does not exist after FFmpeg execution")
+            return ErrorResponse(message="Output file was not created by FFmpeg")
+        
+        # Validate output file size
+        output_size = os.path.getsize(output_path)
+        logger.info(f"job={job_id} output_path={str(output_path)} output_size={output_size}")
+        
+        if output_size == 0:
+            log_error(job_id, f"Output file is empty (0 bytes). FFmpeg stderr: {result.stderr[:1000]}")
+            return ErrorResponse(message="Output file is empty - concat may have failed silently")
+        
+        # Validate output has valid duration using ffprobe
+        try:
+            probe_result = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration", 
+                 "-of", "csv=p=0", str(output_path)],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            duration_str = probe_result.stdout.strip()
+            duration = float(duration_str) if duration_str else 0.0
+            logger.info(f"job={job_id} output_duration={duration}s")
+            
+            if duration < 0.1:
+                log_error(job_id, f"Output duration is invalid: {duration}s. FFmpeg stderr: {result.stderr[:1000]}")
+                return ErrorResponse(message=f"Output video has invalid duration ({duration}s) - concat failed")
+        except Exception as e:
+            logger.warning(f"job={job_id} ffprobe_validation_failed error={str(e)}")
+            # Continue anyway - ffprobe might not be available or file might be valid
         
         # Upload result to Spaces
         try:
