@@ -58,18 +58,35 @@ def sanitize_command(command: List[str]) -> str:
     return " ".join(sanitized)
 
 
-def sanitize_log_line(line: str) -> str:
+def sanitize_stderr(text: str) -> str:
     """
-    Remove sensitive data from log line.
+    Remove sensitive data from stderr/error text.
     - Redact API keys, tokens, secrets, passwords
     - Redact signed URLs
     - Redact host absolute paths (but keep container paths)
-    - Truncate excessively long lines
+    Does NOT truncate - that's handled separately by format_stderr
     """
-    # Truncate if too long
-    if len(line) > MAX_LOG_LINE_LENGTH:
-        line = line[:MAX_LOG_LINE_LENGTH] + "...[TRUNCATED]"
+    # Redact API keys
+    text = re.sub(r'(X-Internal-API-Key:\s*)[^\s]+', r'\1[REDACTED]', text, flags=re.IGNORECASE)
     
+    # Redact key=value, token=value, secret=value, password=value patterns
+    text = re.sub(r'\b(key|token|secret|password|apikey|api_key)=([^\s&]+)', r'\1=[REDACTED]', text, flags=re.IGNORECASE)
+    
+    # Redact signed URLs (query params with signature/key/token)
+    text = re.sub(r'\?(.*?)(signature|key|token|sig)=([^&\s]+)', r'?[SIGNED_URL_REDACTED]', text, flags=re.IGNORECASE)
+    
+    # Redact host paths but keep container paths
+    text = re.sub(r'/tmp/job-[a-f0-9\-]+', '[HOST_JOB_DIR]', text)
+    text = re.sub(r'/source/[^\s]+', '[HOST_SOURCE_PATH]', text)
+    
+    return text
+
+
+def sanitize_log_line(line: str) -> str:
+    """
+    Remove sensitive data from a single log line.
+    Used for /api/logs endpoint only.
+    """
     # Redact API keys
     line = re.sub(r'(X-Internal-API-Key:\s*)[^\s]+', r'\1[REDACTED]', line, flags=re.IGNORECASE)
     
@@ -86,9 +103,9 @@ def sanitize_log_line(line: str) -> str:
     return line
 
 
-def truncate_stderr(stderr: str) -> str:
+def format_stderr(stderr: str) -> str:
     """
-    Truncate stderr to show both beginning and end.
+    Format stderr for logging: sanitize first, then slice to head+tail if needed.
     FFmpeg errors often appear at the very end, so we capture:
     - First 2048 chars (initialization/setup info)
     - Last 8192 chars (actual error messages)
@@ -97,18 +114,21 @@ def truncate_stderr(stderr: str) -> str:
         stderr: Raw stderr string from FFmpeg
         
     Returns:
-        Formatted string with head and tail sections
+        Sanitized and formatted string with head and tail sections
     """
     if not stderr:
         return ""
     
+    # STEP 1: Sanitize the full stderr FIRST (before slicing)
+    stderr = sanitize_stderr(stderr)
+    
     total_length = len(stderr)
     
-    # If stderr is shorter than head + tail, return full content
+    # STEP 2: If short enough, return full sanitized content
     if total_length <= (MAX_STDERR_HEAD + MAX_STDERR_TAIL):
         return stderr
     
-    # Extract head and tail
+    # STEP 3: Extract head and tail from sanitized content
     stderr_head = stderr[:MAX_STDERR_HEAD]
     stderr_tail = stderr[-MAX_STDERR_TAIL:]
     
@@ -117,10 +137,10 @@ def truncate_stderr(stderr: str) -> str:
     
     # Format with clear section markers
     return (
-        f"[STDERR_HEAD - First {MAX_STDERR_HEAD} chars]\n"
+        f"[STDERR_HEAD]\n"
         f"{stderr_head}\n\n"
         f"[... {omitted} characters omitted ...]\n\n"
-        f"[STDERR_TAIL - Last {MAX_STDERR_TAIL} chars]\n"
+        f"[STDERR_TAIL]\n"
         f"{stderr_tail}"
     )
 
@@ -142,12 +162,9 @@ def log_success(job_id: str, output_file: str):
 
 
 def log_error(job_id: str, error_message: str):
-    """Log error with head+tail stderr truncation"""
-    # Apply head+tail truncation for long errors
-    error_message = truncate_stderr(error_message)
-    
-    # Sanitize the error message (redact secrets)
-    error_message = sanitize_log_line(error_message)
+    """Log error with sanitization and head+tail formatting"""
+    # Format stderr: sanitize first, then head+tail if needed
+    error_message = format_stderr(error_message)
     
     logger.error(f"job={job_id} status=error message={error_message}")
 
