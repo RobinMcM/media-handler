@@ -23,28 +23,59 @@ case "$COMMAND" in
     # Last argument is output
     OUTPUT="/videos/${!#}"
     
-    # Build input list and filter
+    # First pass: collect inputs and detect audio presence
     INPUTS=""
-    FILTER=""
+    INPUT_FILES=""
     COUNT=0
+    HAS_AUDIO=1  # Assume audio exists until proven otherwise
     
-    # Process all but last argument as inputs
+    # Collect all input files
     while [ "$#" -gt 1 ]; do
       INPUT="/videos/$1"
       if [ ! -f "$INPUT" ]; then
         echo "Error: Input file not found: $INPUT" >&2
         exit 1
       fi
+      INPUT_FILES="$INPUT_FILES $INPUT"
       INPUTS="$INPUTS -i $INPUT"
-      FILTER="${FILTER}[$COUNT:v][$COUNT:a]"
       COUNT=$((COUNT + 1))
       shift
     done
     
-    FILTER="${FILTER}concat=n=${COUNT}:v=1:a=1[v][a]"
+    # Check if all inputs have audio using ffprobe
+    for INPUT in $INPUT_FILES; do
+      AUDIO_STREAMS=$(ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "$INPUT" 2>/dev/null | wc -l)
+      if [ "$AUDIO_STREAMS" -eq 0 ]; then
+        echo "Detected input without audio: $INPUT (switching to video-only concat)"
+        HAS_AUDIO=0
+        break
+      fi
+    done
     
-    echo "Executing: ffmpeg -y $INPUTS -filter_complex \"$FILTER\" -map \"[v]\" -map \"[a]\" $OUTPUT"
-    ffmpeg -y $INPUTS -filter_complex "$FILTER" -map "[v]" -map "[a]" "$OUTPUT"
+    # Build filter based on audio presence
+    FILTER=""
+    if [ "$HAS_AUDIO" -eq 1 ]; then
+      # Both inputs have audio: concat audio and video
+      IDX=0
+      while [ "$IDX" -lt "$COUNT" ]; do
+        FILTER="${FILTER}[$IDX:v][$IDX:a]"
+        IDX=$((IDX + 1))
+      done
+      FILTER="${FILTER}concat=n=${COUNT}:v=1:a=1[v][a]"
+      MAP_ARGS="-map [v] -map [a]"
+    else
+      # At least one input lacks audio: video-only concat
+      IDX=0
+      while [ "$IDX" -lt "$COUNT" ]; do
+        FILTER="${FILTER}[$IDX:v]"
+        IDX=$((IDX + 1))
+      done
+      FILTER="${FILTER}concat=n=${COUNT}:v=1:a=0[v]"
+      MAP_ARGS="-map [v]"
+    fi
+    
+    echo "Executing: ffmpeg -y $INPUTS -filter_complex \"$FILTER\" $MAP_ARGS $OUTPUT"
+    ffmpeg -y $INPUTS -filter_complex "$FILTER" $MAP_ARGS "$OUTPUT"
     ;;
     
   trim)
