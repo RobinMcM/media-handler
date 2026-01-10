@@ -8,7 +8,8 @@ from collections import deque
 LOG_FILE = "/tmp/ffmpeg-api.log"
 LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
-MAX_STDERR_LENGTH = 8192
+MAX_STDERR_HEAD = 2048  # First N chars to capture (FFmpeg initialization)
+MAX_STDERR_TAIL = 8192  # Last N chars to capture (where FFmpeg errors usually appear)
 MAX_LOG_LINE_LENGTH = 2000
 
 # Configure logger
@@ -85,6 +86,45 @@ def sanitize_log_line(line: str) -> str:
     return line
 
 
+def truncate_stderr(stderr: str) -> str:
+    """
+    Truncate stderr to show both beginning and end.
+    FFmpeg errors often appear at the very end, so we capture:
+    - First 2048 chars (initialization/setup info)
+    - Last 8192 chars (actual error messages)
+    
+    Args:
+        stderr: Raw stderr string from FFmpeg
+        
+    Returns:
+        Formatted string with head and tail sections
+    """
+    if not stderr:
+        return ""
+    
+    total_length = len(stderr)
+    
+    # If stderr is shorter than head + tail, return full content
+    if total_length <= (MAX_STDERR_HEAD + MAX_STDERR_TAIL):
+        return stderr
+    
+    # Extract head and tail
+    stderr_head = stderr[:MAX_STDERR_HEAD]
+    stderr_tail = stderr[-MAX_STDERR_TAIL:]
+    
+    # Calculate how many chars were omitted
+    omitted = total_length - MAX_STDERR_HEAD - MAX_STDERR_TAIL
+    
+    # Format with clear section markers
+    return (
+        f"[STDERR_HEAD - First {MAX_STDERR_HEAD} chars]\n"
+        f"{stderr_head}\n\n"
+        f"[... {omitted} characters omitted ...]\n\n"
+        f"[STDERR_TAIL - Last {MAX_STDERR_TAIL} chars]\n"
+        f"{stderr_tail}"
+    )
+
+
 def log_request(endpoint: str, job_id: str):
     """Log incoming request"""
     logger.info(f"job={job_id} endpoint={endpoint} status=started")
@@ -102,12 +142,11 @@ def log_success(job_id: str, output_file: str):
 
 
 def log_error(job_id: str, error_message: str):
-    """Log error with truncated stderr"""
-    # Truncate error message
-    if len(error_message) > MAX_STDERR_LENGTH:
-        error_message = error_message[:MAX_STDERR_LENGTH] + "...[TRUNCATED]"
+    """Log error with head+tail stderr truncation"""
+    # Apply head+tail truncation for long errors
+    error_message = truncate_stderr(error_message)
     
-    # Sanitize the error message
+    # Sanitize the error message (redact secrets)
     error_message = sanitize_log_line(error_message)
     
     logger.error(f"job={job_id} status=error message={error_message}")
