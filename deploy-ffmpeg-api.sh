@@ -243,6 +243,7 @@ docker run -d \
     -p "${PORT}:8000" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "${MEDIA_DIR}:/source" \
+    -v /tmp:/tmp \
     -e INTERNAL_API_KEYS="${INTERNAL_API_KEYS}" \
     -e SPACES_BUCKET="${SPACES_BUCKET}" \
     -e SPACES_ENDPOINT="${SPACES_ENDPOINT}" \
