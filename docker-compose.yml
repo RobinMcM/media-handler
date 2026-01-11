@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  ffmpeg-api:
+    container_name: ffmpeg-api
+    build:
+      context: ./ffmpeg-api
+      dockerfile: Dockerfile
+    image: ffmpeg-api:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${MEDIA_DIR:-/root/media-files}:/source
+      - /tmp:/tmp
+    environment:
+      - INTERNAL_API_KEYS=${INTERNAL_API_KEYS}
+      - SPACES_BUCKET=${SPACES_BUCKET}
+      - SPACES_ENDPOINT=${SPACES_ENDPOINT}
+      - SPACES_ACCESS_KEY_ID=${SPACES_ACCESS_KEY_ID}
+      - SPACES_SECRET_ACCESS_KEY=${SPACES_SECRET_ACCESS_KEY}
+      - SPACES_PUBLIC_BASE_URL=${SPACES_PUBLIC_BASE_URL:-}
+      - VALKEY_URL=${VALKEY_URL:-redis://valkey:6379}
+    depends_on:
+      - valkey
+    networks:
+      - ffmpeg-network
+
+  valkey:
+    container_name: valkey
+    image: valkey/valkey:7
+    restart: unless-stopped
+    # SECURITY: Bind to localhost only, not exposed publicly
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - valkey_data:/data
+    command: >
+      valkey-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+    networks:
+      - ffmpeg-network
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  valkey_data:
+    name: valkey_data
+
+networks:
+  ffmpeg-network:
+    name: ffmpeg-network
+    driver: bridge
