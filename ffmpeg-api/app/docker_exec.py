@@ -3,20 +3,39 @@ import uuid
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from app.logger import log_request, log_docker_command, log_success, log_error
+from app.valkey_guard import get_guard
 
 
 SOURCE_DIR = os.getenv("SOURCE_DIR", "/source")
 TEMP_BASE = "/tmp"
 
 
-def execute_ffmpeg_command(command: List[str], input_files: List[str]) -> Tuple[bool, str, str]:
+def execute_ffmpeg_command(
+    command: List[str],
+    input_files: List[str],
+    api_key: Optional[str] = None
+) -> Tuple[bool, str, str]:
     job_id = str(uuid.uuid4())
     job_dir = Path(TEMP_BASE) / f"job-{job_id}"
     
     # Log request received
     log_request("ffmpeg", job_id)
+    
+    # Admission control: rate limiting
+    guard = get_guard()
+    if api_key:
+        allowed, error_msg = guard.check_rate_limit(api_key)
+        if not allowed:
+            log_error(job_id, f"Rate limit exceeded for API key")
+            return False, "", error_msg
+    
+    # Admission control: global concurrency semaphore
+    acquired, error_msg = guard.acquire_slot(job_id)
+    if not acquired:
+        log_error(job_id, error_msg)
+        return False, "", error_msg
     
     try:
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +86,10 @@ def execute_ffmpeg_command(command: List[str], input_files: List[str]) -> Tuple[
         log_error(job_id, str(e))
         return False, "", str(e)
     finally:
+        # Release semaphore slot
+        guard.release_slot(job_id)
+        
+        # Clean up job directory
         if job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
 

@@ -12,6 +12,61 @@ Valkey is a high-performance, Redis-compatible key-value store running as a seco
 
 ---
 
+## Admission Control Features
+
+The FFmpeg API now uses Valkey for production-grade admission control:
+
+### 1. **Global Concurrency Limiting**
+- Limits the maximum number of concurrent FFmpeg jobs
+- Prevents resource exhaustion under high load
+- Configurable via `MAX_CONCURRENT_JOBS` (default: 2)
+- Returns **HTTP 429** when limit reached: `{"status":"error","message":"Server busy, please retry"}`
+
+### 2. **Per-API-Key Rate Limiting**
+- Limits requests per minute per API key
+- Configurable via `RATE_LIMIT_PER_MINUTE` (default: 60)
+- Uses hashed API key fingerprints (never stores full keys)
+- Returns **HTTP 429** when exceeded: `{"status":"error","message":"Rate limit exceeded (60 requests per minute)"}`
+
+### 3. **Job Deduplication**
+- Prevents duplicate concurrent jobs for `concat_spaces` endpoint
+- Computes SHA256 hash of request payload (input keys + output key)
+- Short-lived locks (5 minutes) with automatic cleanup
+- Returns **HTTP 409** for duplicates: `{"status":"error","message":"Duplicate job in progress"}`
+
+### 4. **Fail-Open Design**
+- If Valkey is unavailable, API continues to operate normally
+- Logs warnings but allows all requests
+- No hard dependency on Valkey availability
+
+### Environment Variables
+
+```bash
+# Valkey connection
+VALKEY_URL=redis://valkey:6379
+
+# Admission control settings
+MAX_CONCURRENT_JOBS=2          # Max simultaneous FFmpeg jobs
+RATE_LIMIT_PER_MINUTE=60       # Max requests per minute per API key
+```
+
+### Testing Admission Control
+
+Run the verification script to test all features:
+
+```bash
+# From host
+docker exec -it ffmpeg-api python scripts/verify_valkey_guard.py
+
+# Expected output:
+# TEST 1: Valkey Connectivity          ✓ PASS
+# TEST 2: Global Concurrency Semaphore ✓ PASS
+# TEST 3: Rate Limiting                ✓ PASS
+# TEST 4: Job Deduplication            ✓ PASS
+```
+
+---
+
 ## Architecture
 
 ```

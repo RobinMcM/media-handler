@@ -222,7 +222,10 @@ async def concat_videos_from_spaces(
     """
     import uuid
     import shutil
+    import json
+    import hashlib
     from pathlib import Path
+    from app.valkey_guard import get_guard
     
     # Validation: at least 2 inputs required (no maximum limit)
     if len(request.inputs) < 2:
@@ -250,6 +253,26 @@ async def concat_videos_from_spaces(
     output_ext = Path(request.output.spaces_key).suffix.lower()
     if output_ext not in allowed_extensions:
         return ErrorResponse(message=f"Invalid output file extension: {output_ext}. Allowed: {', '.join(allowed_extensions)}")
+    
+    # Admission control: rate limiting (checked via api_key passed to guard)
+    guard = get_guard()
+    allowed, error_msg = guard.check_rate_limit(api_key)
+    if not allowed:
+        return ErrorResponse(message=error_msg)
+    
+    # Admission control: job deduplication
+    # Compute deterministic dedupe key from request payload
+    dedupe_payload = {
+        "inputs": [inp.spaces_key for inp in request.inputs],
+        "output": request.output.spaces_key
+    }
+    dedupe_key = hashlib.sha256(
+        json.dumps(dedupe_payload, sort_keys=True).encode()
+    ).hexdigest()
+    
+    acquired_dedupe, error_msg = guard.acquire_dedupe(dedupe_key)
+    if not acquired_dedupe:
+        return ErrorResponse(message=error_msg)
     
     # Generate job ID and create temp directory
     job_id = str(uuid.uuid4())
@@ -287,25 +310,34 @@ async def concat_videos_from_spaces(
         )
         command = build_concat_command(local_concat_req)
         
-        # Execute FFmpeg via Docker (same as local concat endpoint)
-        # We need to manually execute here to use the job_dir we created
-        docker_cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{job_dir}:/videos",
-            "media-handler"
-        ] + command
+        # Admission control: acquire global semaphore slot
+        acquired_slot, error_msg = guard.acquire_slot(job_id)
+        if not acquired_slot:
+            return ErrorResponse(message=error_msg)
         
-        import subprocess
-        from app.logger import log_docker_command
-        
-        log_docker_command(job_id, docker_cmd)
-        
-        result = subprocess.run(
-            docker_cmd,
-            capture_output=True,
-            text=True,
-            timeout=3600
-        )
+        try:
+            # Execute FFmpeg via Docker (same as local concat endpoint)
+            # We need to manually execute here to use the job_dir we created
+            docker_cmd = [
+                "docker", "run", "--rm",
+                "-v", f"{job_dir}:/videos",
+                "media-handler"
+            ] + command
+            
+            import subprocess
+            from app.logger import log_docker_command
+            
+            log_docker_command(job_id, docker_cmd)
+            
+            result = subprocess.run(
+                docker_cmd,
+                capture_output=True,
+                text=True,
+                timeout=3600
+            )
+        finally:
+            # Release semaphore slot after docker execution
+            guard.release_slot(job_id)
         
         output_path = job_dir / output_filename
         
@@ -388,6 +420,9 @@ async def concat_videos_from_spaces(
         return ErrorResponse(message=f"Unexpected error: {str(e)}")
     
     finally:
+        # Release deduplication lock
+        guard.release_dedupe(dedupe_key)
+        
         # Always cleanup job directory
         if job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
@@ -398,7 +433,7 @@ async def concat_videos(request: ConcatRequest, api_key: str = Depends(verify_ap
     command = build_concat_command(request)
     input_files = request.inputs
     
-    success, output, message = execute_ffmpeg_command(command, input_files)
+    success, output, message = execute_ffmpeg_command(command, input_files, api_key)
     
     if success:
         return SuccessResponse(output=output)
@@ -411,7 +446,7 @@ async def trim_video(request: TrimRequest, api_key: str = Depends(verify_api_key
     command = build_trim_command(request)
     input_files = [request.input]
     
-    success, output, message = execute_ffmpeg_command(command, input_files)
+    success, output, message = execute_ffmpeg_command(command, input_files, api_key)
     
     if success:
         return SuccessResponse(output=output)
@@ -424,7 +459,7 @@ async def scale_video(request: ScaleRequest, api_key: str = Depends(verify_api_k
     command = build_scale_command(request)
     input_files = [request.input]
     
-    success, output, message = execute_ffmpeg_command(command, input_files)
+    success, output, message = execute_ffmpeg_command(command, input_files, api_key)
     
     if success:
         return SuccessResponse(output=output)
@@ -437,7 +472,7 @@ async def crop_video(request: CropRequest, api_key: str = Depends(verify_api_key
     command = build_crop_command(request)
     input_files = [request.input]
     
-    success, output, message = execute_ffmpeg_command(command, input_files)
+    success, output, message = execute_ffmpeg_command(command, input_files, api_key)
     
     if success:
         return SuccessResponse(output=output)
@@ -450,7 +485,7 @@ async def rotate_video(request: RotateRequest, api_key: str = Depends(verify_api
     command = build_rotate_command(request)
     input_files = [request.input]
     
-    success, output, message = execute_ffmpeg_command(command, input_files)
+    success, output, message = execute_ffmpeg_command(command, input_files, api_key)
     
     if success:
         return SuccessResponse(output=output)
@@ -463,7 +498,7 @@ async def process_audio(request: AudioRequest, api_key: str = Depends(verify_api
     command = build_audio_command(request)
     input_files = [request.input]
     
-    success, output, message = execute_ffmpeg_command(command, input_files)
+    success, output, message = execute_ffmpeg_command(command, input_files, api_key)
     
     if success:
         return SuccessResponse(output=output)
@@ -476,7 +511,7 @@ async def overlay_videos(request: OverlayRequest, api_key: str = Depends(verify_
     command = build_overlay_command(request)
     input_files = [request.base, request.overlay]
     
-    success, output, message = execute_ffmpeg_command(command, input_files)
+    success, output, message = execute_ffmpeg_command(command, input_files, api_key)
     
     if success:
         return SuccessResponse(output=output)
@@ -489,7 +524,7 @@ async def add_watermark(request: WatermarkRequest, api_key: str = Depends(verify
     command = build_watermark_command(request)
     input_files = [request.video, request.image]
     
-    success, output, message = execute_ffmpeg_command(command, input_files)
+    success, output, message = execute_ffmpeg_command(command, input_files, api_key)
     
     if success:
         return SuccessResponse(output=output)
@@ -502,7 +537,7 @@ async def encode_video(request: EncodeRequest, api_key: str = Depends(verify_api
     command = build_encode_command(request)
     input_files = [request.input]
     
-    success, output, message = execute_ffmpeg_command(command, input_files)
+    success, output, message = execute_ffmpeg_command(command, input_files, api_key)
     
     if success:
         return SuccessResponse(output=output)
