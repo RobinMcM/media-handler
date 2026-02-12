@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Dict, Any
 
 
@@ -113,6 +113,44 @@ class ConcatSpacesRequest(BaseModel):
 
 
 class ConcatSpacesResponse(BaseModel):
+    status: str = "ok"
+    output_key: str
+    output_url: Optional[str]
+
+
+class MuxRequest(BaseModel):
+    """Mux one video and one audio. Use either local filenames or URLs, not both."""
+    video: Optional[str] = None
+    audio: Optional[str] = None
+    output: Optional[str] = None
+    video_url: Optional[str] = None
+    audio_url: Optional[str] = None
+    output_spaces: Optional[SpacesObjectRef] = None
+
+    @model_validator(mode="after")
+    def exactly_one_mode(self):
+        local = all(
+            self.video is not None,
+            self.audio is not None,
+            self.output is not None,
+        )
+        url = all(
+            self.video_url is not None,
+            self.audio_url is not None,
+            self.output_spaces is not None,
+        )
+        if local and not url:
+            return self
+        if url and not local:
+            return self
+        raise ValueError(
+            "Use either (video, audio, output) for local files or "
+            "(video_url, audio_url, output_spaces) for URLs; do not mix."
+        )
+
+
+class MuxSpacesResponse(BaseModel):
+    """Response for mux when using URL mode (output uploaded to Spaces)."""
     status: str = "ok"
     output_key: str
     output_url: Optional[str]

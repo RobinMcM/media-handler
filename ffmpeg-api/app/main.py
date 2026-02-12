@@ -5,16 +5,19 @@ from app.schemas import (
     RotateRequest, AudioRequest, OverlayRequest, WatermarkRequest,
     EncodeRequest, SuccessResponse, ErrorResponse,
     InstructionsResponse, EndpointInfo, LogsResponse,
-    ConcatSpacesRequest, ConcatSpacesResponse
+    ConcatSpacesRequest, ConcatSpacesResponse,
+    MuxRequest, MuxSpacesResponse
 )
 from app.ffmpeg import (
     build_concat_command, build_trim_command, build_scale_command,
     build_crop_command, build_rotate_command, build_audio_command,
-    build_overlay_command, build_watermark_command, build_encode_command
+    build_overlay_command, build_watermark_command, build_encode_command,
+    build_mux_command
 )
 from app.docker_exec import execute_ffmpeg_command, extract_input_files
-from app.logger import get_sanitized_logs, log_request, log_success, log_error
+from app.logger import get_sanitized_logs, log_request, log_success, log_error, log_docker_command
 from app.spaces import download_key_to_path, upload_path_to_key, get_public_url
+from app.download import download_url_to_path
 
 
 app = FastAPI(title="FFmpeg API", version="1.0.0")
@@ -181,6 +184,21 @@ async def get_instructions(api_key: str = Depends(verify_api_key)):
                 "status": "ok",
                 "output_key": "path/to/output.mp4",
                 "output_url": "https://bucket.region.digitaloceanspaces.com/path/to/output.mp4"
+            },
+            error_response={"status": "error", "message": "Error description"}
+        ),
+        EndpointInfo(
+            name="mux",
+            method="POST",
+            path="/api/ffmpeg/mux",
+            description="Mux one video and one audio into a single video (replace video audio with supplied audio; output length = shorter of the two)",
+            request_body={
+                "local": {"video": "clip.mp4", "audio": "music.mp3", "output": "out.mp4"},
+                "url": {"video_url": "https://...", "audio_url": "https://...", "output_spaces": {"spaces_key": "path/to/out.mp4"}}
+            },
+            success_response={
+                "local": {"status": "ok", "output": "out.mp4"},
+                "url": {"status": "ok", "output_key": "path/to/out.mp4", "output_url": "https://..."}
             },
             error_response={"status": "error", "message": "Error description"}
         )
@@ -543,6 +561,163 @@ async def encode_video(request: EncodeRequest, api_key: str = Depends(verify_api
         return SuccessResponse(output=output)
     else:
         return ErrorResponse(message=message)
+
+
+# Allowed extensions for mux endpoint
+_MUX_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
+_MUX_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".aac"}
+
+
+@app.post("/api/ffmpeg/mux", response_model=SuccessResponse | MuxSpacesResponse | ErrorResponse)
+async def mux_video_audio(request: MuxRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Mux one video and one audio into a single video (replaces video's audio with the supplied audio).
+    Use either local filenames (video, audio, output) or URLs (video_url, audio_url, output_spaces).
+    Output length = shorter of the two inputs (-shortest).
+    """
+    import uuid
+    import shutil
+    import json
+    import hashlib
+    import subprocess
+    from pathlib import Path
+    from app.valkey_guard import get_guard
+
+    if request.video is not None and request.audio is not None and request.output is not None:
+        # --- Local mode ---
+        for name, val in [("video", request.video), ("audio", request.audio), ("output", request.output)]:
+            if ".." in val or val.startswith("/"):
+                return ErrorResponse(message=f"Invalid {name}: cannot contain '..' or start with '/'")
+        video_ext = Path(request.video).suffix.lower()
+        audio_ext = Path(request.audio).suffix.lower()
+        output_ext = Path(request.output).suffix.lower()
+        if video_ext not in _MUX_VIDEO_EXTENSIONS:
+            return ErrorResponse(
+                message=f"Invalid video extension: {video_ext}. Allowed: {', '.join(sorted(_MUX_VIDEO_EXTENSIONS))}"
+            )
+        if audio_ext not in _MUX_AUDIO_EXTENSIONS:
+            return ErrorResponse(
+                message=f"Invalid audio extension: {audio_ext}. Allowed: {', '.join(sorted(_MUX_AUDIO_EXTENSIONS))}"
+            )
+        if output_ext not in _MUX_VIDEO_EXTENSIONS:
+            return ErrorResponse(
+                message=f"Invalid output extension: {output_ext}. Allowed: {', '.join(sorted(_MUX_VIDEO_EXTENSIONS))}"
+            )
+
+        command = build_mux_command(request.video, request.audio, request.output)
+        success, output, message = execute_ffmpeg_command(command, [request.video, request.audio], api_key)
+        if success:
+            return SuccessResponse(output=output)
+        return ErrorResponse(message=message)
+
+    # --- URL mode ---
+    video_url = request.video_url
+    audio_url = request.audio_url
+    output_spaces_ref = request.output_spaces
+    if not output_spaces_ref or not output_spaces_ref.spaces_key or not output_spaces_ref.spaces_key.strip():
+        return ErrorResponse(message="output_spaces.spaces_key is required for URL mode")
+    if ".." in output_spaces_ref.spaces_key or output_spaces_ref.spaces_key.startswith("/"):
+        return ErrorResponse(message="Invalid output spaces_key: cannot contain '..' or start with '/'")
+    output_ext = Path(output_spaces_ref.spaces_key).suffix.lower()
+    if output_ext not in _MUX_VIDEO_EXTENSIONS:
+        return ErrorResponse(
+            message=f"Invalid output extension: {output_ext}. Allowed: {', '.join(sorted(_MUX_VIDEO_EXTENSIONS))}"
+        )
+
+    url_lower_v = video_url.strip().lower()
+    url_lower_a = audio_url.strip().lower()
+    if not (url_lower_v.startswith("http://") or url_lower_v.startswith("https://")):
+        return ErrorResponse(message="video_url must use http:// or https://")
+    if not (url_lower_a.startswith("http://") or url_lower_a.startswith("https://")):
+        return ErrorResponse(message="audio_url must use http:// or https://")
+
+    guard = get_guard()
+    allowed, error_msg = guard.check_rate_limit(api_key)
+    if not allowed:
+        return ErrorResponse(message=error_msg)
+
+    dedupe_payload = {"video_url": video_url, "audio_url": audio_url, "output": output_spaces_ref.spaces_key}
+    dedupe_key = hashlib.sha256(json.dumps(dedupe_payload, sort_keys=True).encode()).hexdigest()
+    acquired_dedupe, error_msg = guard.acquire_dedupe(dedupe_key)
+    if not acquired_dedupe:
+        return ErrorResponse(message=error_msg)
+
+    job_id = str(uuid.uuid4())
+    job_dir = Path("/tmp") / f"job-{job_id}"
+    log_request("mux", job_id)
+
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+        video_path = job_dir / "video.mp4"
+        audio_path = job_dir / "audio.mp3"
+        try:
+            download_url_to_path(video_url, str(video_path), default_extension=".mp4")
+            download_url_to_path(audio_url, str(audio_path), default_extension=".mp3")
+        except ValueError as e:
+            log_error(job_id, str(e))
+            return ErrorResponse(message=str(e))
+        except Exception as e:
+            log_error(job_id, f"Download failed: {str(e)}")
+            return ErrorResponse(message=f"Download failed: {str(e)}")
+
+        output_filename = "output.mp4"
+        command = build_mux_command("video.mp4", "audio.mp3", output_filename)
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{job_dir}:/videos",
+            "media-handler"
+        ] + command
+
+        log_docker_command(job_id, docker_cmd)
+        acquired_slot, error_msg = guard.acquire_slot(job_id)
+        if not acquired_slot:
+            return ErrorResponse(message=error_msg)
+        try:
+            result = subprocess.run(
+                docker_cmd,
+                capture_output=True,
+                text=True,
+                timeout=3600
+            )
+        finally:
+            guard.release_slot(job_id)
+
+        output_path = job_dir / output_filename
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            log_error(job_id, error_msg)
+            return ErrorResponse(message=f"FFmpeg mux failed: {error_msg[:200]}")
+        if not output_path.exists():
+            log_error(job_id, "Output file does not exist after FFmpeg execution")
+            return ErrorResponse(message="Output file was not created by FFmpeg")
+        output_size = output_path.stat().st_size
+        if output_size == 0:
+            log_error(job_id, "Output file is empty")
+            return ErrorResponse(message="Output file is empty")
+
+        try:
+            upload_path_to_key(
+                str(output_path),
+                output_spaces_ref.spaces_key,
+                content_type="video/mp4"
+            )
+        except Exception as e:
+            log_error(job_id, f"Failed to upload to Spaces: {str(e)}")
+            return ErrorResponse(message=f"Failed to upload output to Spaces: {str(e)}")
+
+        output_url = get_public_url(output_spaces_ref.spaces_key)
+        log_success(job_id, output_spaces_ref.spaces_key)
+        return MuxSpacesResponse(
+            output_key=output_spaces_ref.spaces_key,
+            output_url=output_url
+        )
+    except Exception as e:
+        log_error(job_id, str(e))
+        return ErrorResponse(message=f"Unexpected error: {str(e)}")
+    finally:
+        guard.release_dedupe(dedupe_key)
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
 
 
 @app.get("/health")

@@ -540,9 +540,62 @@ case "$COMMAND" in
     ffmpeg -y -i "$INPUT" $OPTS "$OUTPUT"
     ;;
     
+  mux)
+    # Mux: video (first input) + audio (second input) -> single video with that audio
+    # Arguments: video_file audio_file output_file
+    if [ "$#" -ne 3 ]; then
+      echo "Error: mux requires video, audio, and output files" >&2
+      exit 1
+    fi
+    
+    VIDEO="/videos/$1"
+    AUDIO="/videos/$2"
+    OUTPUT_NAME="$3"
+    OUTPUT="/videos/$OUTPUT_NAME"
+    
+    if [ -z "$OUTPUT_NAME" ]; then
+      echo "Error: output filename cannot be empty" >&2
+      exit 1
+    fi
+    
+    case "$OUTPUT_NAME" in
+      *.*) ;;
+      *)
+        echo "Error: output filename must have an extension (e.g., .mp4)" >&2
+        exit 1
+        ;;
+    esac
+    
+    if [ ! -f "$VIDEO" ]; then
+      echo "Error: Video file not found: $VIDEO" >&2
+      exit 1
+    fi
+    
+    if [ ! -f "$AUDIO" ]; then
+      echo "Error: Audio file not found: $AUDIO" >&2
+      exit 1
+    fi
+    
+    echo "Executing: ffmpeg -y -i $VIDEO -i $AUDIO -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest $OUTPUT" >&2
+    ffmpeg -y -i "$VIDEO" -i "$AUDIO" -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -shortest "$OUTPUT"
+    
+    if [ ! -f "$OUTPUT" ]; then
+      echo "Error: Output file was not created: $OUTPUT" >&2
+      exit 1
+    fi
+    
+    OUTPUT_SIZE=$(stat -f%z "$OUTPUT" 2>/dev/null || stat -c%s "$OUTPUT" 2>/dev/null || echo "0")
+    if [ "$OUTPUT_SIZE" -eq 0 ]; then
+      echo "Error: Output file is empty (0 bytes)" >&2
+      exit 1
+    fi
+    
+    echo "Mux successful: $OUTPUT ($OUTPUT_SIZE bytes)" >&2
+    ;;
+    
   *)
     echo "Error: Unknown command: $COMMAND" >&2
-    echo "Available commands: concat, trim, scale, crop, rotate, mute, overlay, watermark, format" >&2
+    echo "Available commands: concat, trim, scale, crop, rotate, mute, overlay, watermark, format, mux" >&2
     exit 1
     ;;
 esac
