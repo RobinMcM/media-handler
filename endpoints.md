@@ -18,22 +18,29 @@
 
 ## 2. Media-handler FFmpeg API — port 8000 (separate container)
 
+**Output rule (file-producing endpoints):** Job output is never written to server storage (e.g. SOURCE_DIR). For endpoints that produce a file (concat, concat_spaces, trim, scale, crop, rotate, audio, overlay, watermark, encode, mux):
+
+- **Stream:** If the client does not provide `output_destination`, the result is returned in the HTTP response (e.g. `Content-Disposition: attachment`). The client saves to the user's machine.
+- **Pre-signed URL:** If the client provides `output_destination: { "presigned_put_url": "https://..." }`, the server uploads the result to that URL with a single PUT, then returns JSON success. No S3/Spaces credentials on media-handler; the client generates the pre-signed URL.
+
+All processing uses a temp directory under `/tmp`; the job directory is always deleted (in a `finally` block or after streaming).
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | **GET** | `/health` | No | Health check; returns `{"status": "healthy"}` |
 | **GET** | `/api/instructions` | API key | List of all FFmpeg endpoints and usage |
 | **GET** | `/api/logs` | API key | Last N log lines (sanitized), query: `?lines=200` (max 1000) |
-| **POST** | `/api/ffmpeg/concat` | API key | Concat videos (local files in `/source`) |
-| **POST** | `/api/ffmpeg/concat_spaces` | API key | Concat videos from DigitalOcean Spaces |
-| **POST** | `/api/ffmpeg/trim` | API key | Trim video |
-| **POST** | `/api/ffmpeg/scale` | API key | Scale video |
-| **POST** | `/api/ffmpeg/crop` | API key | Crop video |
-| **POST** | `/api/ffmpeg/rotate` | API key | Rotate video |
-| **POST** | `/api/ffmpeg/audio` | API key | Mute/normalize audio |
-| **POST** | `/api/ffmpeg/overlay` | API key | Overlay two videos |
-| **POST** | `/api/ffmpeg/watermark` | API key | Add image watermark |
-| **POST** | `/api/ffmpeg/encode` | API key | Encode/transcode video |
-| **POST** | `/api/ffmpeg/mux` | API key | Mux one video and one audio into a single video (replace video audio with supplied audio) |
+| **POST** | `/api/ffmpeg/concat` | API key | Concat videos (inputs from SOURCE_DIR); output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/concat_spaces` | API key | Concat videos from Spaces; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/trim` | API key | Trim video; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/scale` | API key | Scale video; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/crop` | API key | Crop video; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/rotate` | API key | Rotate video; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/audio` | API key | Mute/normalize audio; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/overlay` | API key | Overlay two videos; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/watermark` | API key | Add image watermark; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/encode` | API key | Encode/transcode video; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/mux` | API key | Mux one video and one audio; output stream or presigned_put_url |
 
 **Auth:** API key in header `X-Internal-API-Key`.
 

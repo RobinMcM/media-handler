@@ -16,82 +16,81 @@ def execute_ffmpeg_command(
     command: List[str],
     input_files: List[str],
     api_key: Optional[str] = None
-) -> Tuple[bool, str, str]:
+) -> Tuple[bool, Optional[Path], str, str]:
+    """
+    Run FFmpeg in a temp job_dir. Inputs are read from SOURCE_DIR; output is written only to job_dir.
+    Returns (success, job_dir, output_filename, message). On success caller must read output from
+    job_dir / output_filename then delete job_dir in a finally block. On failure job_dir is cleaned here.
+    """
     job_id = str(uuid.uuid4())
     job_dir = Path(TEMP_BASE) / f"job-{job_id}"
-    
-    # Log request received
+
     log_request("ffmpeg", job_id)
-    
-    # Admission control: rate limiting
+
     guard = get_guard()
     if api_key:
         allowed, error_msg = guard.check_rate_limit(api_key)
         if not allowed:
-            log_error(job_id, f"Rate limit exceeded for API key")
-            return False, "", error_msg
-    
-    # Admission control: global concurrency semaphore
+            log_error(job_id, "Rate limit exceeded for API key")
+            return False, None, "", error_msg
+
     acquired, error_msg = guard.acquire_slot(job_id)
     if not acquired:
         log_error(job_id, error_msg)
-        return False, "", error_msg
-    
+        return False, None, "", error_msg
+
     try:
         job_dir.mkdir(parents=True, exist_ok=True)
-        
+
         for input_file in input_files:
             source_path = Path(SOURCE_DIR) / input_file
             if not source_path.exists():
-                return False, "", f"Input file not found: {input_file}"
-            
+                shutil.rmtree(job_dir, ignore_errors=True)
+                return False, None, "", f"Input file not found: {input_file}"
+
             dest_path = job_dir / input_file
             shutil.copy2(source_path, dest_path)
-        
+
         docker_cmd = [
             "docker", "run", "--rm",
             "-v", f"{job_dir}:/videos",
             "media-handler"
         ] + command
-        
-        # Log docker command (sanitized)
+
         log_docker_command(job_id, docker_cmd)
-        
         print(f"Executing: {' '.join(docker_cmd)}")
-        
+
         result = subprocess.run(
             docker_cmd,
             capture_output=True,
             text=True,
             timeout=3600
         )
-        
+
         output_file = command[-1]
         output_path = job_dir / output_file
-        
+
         if result.returncode == 0 and output_path.exists():
-            final_output = Path(SOURCE_DIR) / output_file
-            shutil.copy2(output_path, final_output)
             log_success(job_id, output_file)
-            return True, output_file, result.stdout
+            return True, job_dir, output_file, result.stdout
         else:
             error_msg = result.stderr or result.stdout
             log_error(job_id, error_msg)
-            return False, "", error_msg
-    
+            shutil.rmtree(job_dir, ignore_errors=True)
+            return False, None, "", error_msg
+
     except subprocess.TimeoutExpired:
         log_error(job_id, "Command timed out after 1 hour")
-        return False, "", "Command timed out after 1 hour"
-    except Exception as e:
-        log_error(job_id, str(e))
-        return False, "", str(e)
-    finally:
-        # Release semaphore slot
-        guard.release_slot(job_id)
-        
-        # Clean up job directory
         if job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
+        return False, None, "", "Command timed out after 1 hour"
+    except Exception as e:
+        log_error(job_id, str(e))
+        if job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
+        return False, None, "", str(e)
+    finally:
+        guard.release_slot(job_id)
 
 
 def extract_input_files(command: List[str]) -> List[str]:

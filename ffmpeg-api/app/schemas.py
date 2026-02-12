@@ -4,12 +4,14 @@ from typing import List, Optional, Dict, Any
 
 class ConcatRequest(BaseModel):
     inputs: List[str]
-    output: str
+    output: str  # filename for temp output (e.g. out.mp4)
+    output_destination: Optional["OutputDestination"] = None
 
 
 class TrimRequest(BaseModel):
     input: str
     output: str
+    output_destination: Optional["OutputDestination"] = None
     start: Optional[float] = None
     end: Optional[float] = None
     duration: Optional[float] = None
@@ -18,6 +20,7 @@ class TrimRequest(BaseModel):
 class ScaleRequest(BaseModel):
     input: str
     output: str
+    output_destination: Optional["OutputDestination"] = None
     size: str
     aspect_ratio: bool = False
 
@@ -25,6 +28,7 @@ class ScaleRequest(BaseModel):
 class CropRequest(BaseModel):
     input: str
     output: str
+    output_destination: Optional["OutputDestination"] = None
     x: int
     y: int
     width: int
@@ -34,12 +38,14 @@ class CropRequest(BaseModel):
 class RotateRequest(BaseModel):
     input: str
     output: str
+    output_destination: Optional["OutputDestination"] = None
     angle: int
 
 
 class AudioRequest(BaseModel):
     input: str
     output: str
+    output_destination: Optional["OutputDestination"] = None
     action: str
     normalize: bool = False
 
@@ -48,6 +54,7 @@ class OverlayRequest(BaseModel):
     base: str
     overlay: str
     output: str
+    output_destination: Optional["OutputDestination"] = None
     x: int = 0
     y: int = 0
 
@@ -56,6 +63,7 @@ class WatermarkRequest(BaseModel):
     video: str
     image: str
     output: str
+    output_destination: Optional["OutputDestination"] = None
     x: Optional[int] = None
     y: Optional[int] = None
     opacity: float = 1.0
@@ -65,6 +73,7 @@ class WatermarkRequest(BaseModel):
 class EncodeRequest(BaseModel):
     input: str
     output: str
+    output_destination: Optional["OutputDestination"] = None
     format: Optional[str] = None
     vcodec: Optional[str] = None
     acodec: Optional[str] = None
@@ -107,9 +116,15 @@ class SpacesObjectRef(BaseModel):
     spaces_key: str
 
 
+class OutputDestination(BaseModel):
+    """Client-provided destination for job output. If absent, output is streamed in the response."""
+    presigned_put_url: str
+
+
 class ConcatSpacesRequest(BaseModel):
     inputs: List[SpacesObjectRef]
-    output: SpacesObjectRef
+    output: Optional[SpacesObjectRef] = None  # deprecated: use output_destination
+    output_destination: Optional[OutputDestination] = None
 
 
 class ConcatSpacesResponse(BaseModel):
@@ -119,33 +134,23 @@ class ConcatSpacesResponse(BaseModel):
 
 
 class MuxRequest(BaseModel):
-    """Mux one video and one audio. Use either local filenames or URLs, not both."""
+    """Mux one video and one audio. Use either local filenames or URLs, not both. Output: stream or output_destination."""
     video: Optional[str] = None
     audio: Optional[str] = None
-    output: Optional[str] = None
     video_url: Optional[str] = None
     audio_url: Optional[str] = None
-    output_spaces: Optional[SpacesObjectRef] = None
+    output_destination: Optional[OutputDestination] = None
 
     @model_validator(mode="after")
     def exactly_one_mode(self):
-        local = all(
-            self.video is not None,
-            self.audio is not None,
-            self.output is not None,
-        )
-        url = all(
-            self.video_url is not None,
-            self.audio_url is not None,
-            self.output_spaces is not None,
-        )
+        local = self.video is not None and self.audio is not None
+        url = self.video_url is not None and self.audio_url is not None
         if local and not url:
             return self
         if url and not local:
             return self
         raise ValueError(
-            "Use either (video, audio, output) for local files or "
-            "(video_url, audio_url, output_spaces) for URLs; do not mix."
+            "Use either (video, audio) for local files or (video_url, audio_url) for URLs; do not mix."
         )
 
 
