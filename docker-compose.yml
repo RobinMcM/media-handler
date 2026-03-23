@@ -8,8 +8,8 @@ services:
       dockerfile: Dockerfile
     image: ffmpeg-api:latest
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${MEDIA_DIR:-/root/media-files}:/source
@@ -49,6 +49,31 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  nginx:
+    image: nginx:alpine
+    container_name: media-nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - ffmpeg-api
+    networks:
+      - ffmpeg-network
+
+  certbot:
+    image: certbot/certbot
+    container_name: media-certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
 
 volumes:
   valkey_data:
