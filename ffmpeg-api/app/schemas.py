@@ -159,3 +159,16 @@ class MuxSpacesResponse(BaseModel):
     status: str = "ok"
     output_key: str
     output_url: Optional[str]
+
+
+# Pydantic v2: resolve forward refs where OutputDestination is referenced
+# before its class definition in this module.
+ConcatRequest.model_rebuild()
+TrimRequest.model_rebuild()
+ScaleRequest.model_rebuild()
+CropRequest.model_rebuild()
+RotateRequest.model_rebuild()
+AudioRequest.model_rebuild()
+OverlayRequest.model_rebuild()
+WatermarkRequest.model_rebuild()
+EncodeRequest.model_rebuild()
