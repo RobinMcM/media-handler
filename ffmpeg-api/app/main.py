@@ -2,7 +2,7 @@ import shutil
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
 from app.auth import verify_api_key
@@ -929,17 +929,32 @@ async def _extract_last_frame_impl(request: ExtractFrameRequest, api_key: str) -
 
 @app.post("/api/ffmpeg/extract-last-frame")
 async def extract_last_frame(request: ExtractFrameRequest, api_key: str = Depends(verify_api_key)):
-    return await _extract_last_frame_impl(request, api_key)
+    result = await _extract_last_frame_impl(request, api_key)
+    if isinstance(result, ErrorResponse):
+        message = (result.message or "").strip()
+        status_code = 400 if any(token in message.lower() for token in ["required", "invalid", "must use"]) else 502
+        raise HTTPException(status_code=status_code, detail=message or "Frame extraction failed")
+    return result
 
 
 @app.post("/api/ffmpeg/extract_frame")
 async def extract_frame_legacy(request: ExtractFrameRequest, api_key: str = Depends(verify_api_key)):
-    return await _extract_last_frame_impl(request, api_key)
+    result = await _extract_last_frame_impl(request, api_key)
+    if isinstance(result, ErrorResponse):
+        message = (result.message or "").strip()
+        status_code = 400 if any(token in message.lower() for token in ["required", "invalid", "must use"]) else 502
+        raise HTTPException(status_code=status_code, detail=message or "Frame extraction failed")
+    return result
 
 
 @app.post("/api/ffmpeg/last-frame")
 async def last_frame_legacy(request: ExtractFrameRequest, api_key: str = Depends(verify_api_key)):
-    return await _extract_last_frame_impl(request, api_key)
+    result = await _extract_last_frame_impl(request, api_key)
+    if isinstance(result, ErrorResponse):
+        message = (result.message or "").strip()
+        status_code = 400 if any(token in message.lower() for token in ["required", "invalid", "must use"]) else 502
+        raise HTTPException(status_code=status_code, detail=message or "Frame extraction failed")
+    return result
 
 
 @app.get("/health")
