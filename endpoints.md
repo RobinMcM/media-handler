@@ -41,6 +41,9 @@ All processing uses a temp directory under `/tmp`; the job directory is always d
 | **POST** | `/api/ffmpeg/watermark` | API key | Add image watermark; output stream or presigned_put_url |
 | **POST** | `/api/ffmpeg/encode` | API key | Encode/transcode video; output stream or presigned_put_url |
 | **POST** | `/api/ffmpeg/mux` | API key | Mux one video and one audio; output stream or presigned_put_url |
+| **POST** | `/api/ffmpeg/extract-last-frame` | API key | Extract one frame from video URL/Spaces key; returns JSON with `image_url` |
+| **POST** | `/api/ffmpeg/extract_frame` | API key | Legacy alias of extract-last-frame |
+| **POST** | `/api/ffmpeg/last-frame` | API key | Legacy alias of extract-last-frame |
 
 **Auth:** API key in header `X-Internal-API-Key`.
 
@@ -49,4 +52,4 @@ All processing uses a temp directory under `/tmp`; the job directory is always d
 ## Summary
 
 - **MovieShaker engine:** 4 app routes (`/`, `/health`, `/users`, `/projects` + CRUD) plus SuperTokens under `/auth`.
-- **Media-handler:** 1 unauthenticated route (`/health`) and 13 authenticated routes under `/api/...` (instructions, logs, and 11 FFmpeg operations).
+- **Media-handler:** 1 unauthenticated route (`/health`) and 16 authenticated routes under `/api/...` (instructions, logs, and 14 FFmpeg operations including frame extraction aliases).

@@ -2,7 +2,7 @@ from typing import List
 from app.schemas import (
     ConcatRequest, TrimRequest, ScaleRequest, CropRequest,
     RotateRequest, AudioRequest, OverlayRequest, WatermarkRequest,
-    EncodeRequest
+    EncodeRequest, ExtractFrameRequest
 )
 
 
@@ -84,3 +84,11 @@ def build_encode_command(req: EncodeRequest) -> List[str]:
 def build_mux_command(video: str, audio: str, output: str) -> List[str]:
     """Build mux command: video + audio -> single video with that audio track."""
     return ["mux", video, audio, output]
+
+
+def build_extract_frame_command(req: ExtractFrameRequest, input_name: str, output_name: str) -> List[str]:
+    cmd = ["frame"]
+    if req.position:
+        cmd.extend(["--position", str(req.position)])
+    cmd.extend([input_name, output_name])
+    return cmd

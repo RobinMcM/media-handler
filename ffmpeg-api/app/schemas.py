@@ -79,6 +79,13 @@ class EncodeRequest(BaseModel):
     acodec: Optional[str] = None
 
 
+class ExtractFrameRequest(BaseModel):
+    """Extract a single frame from a source video URL or Spaces key."""
+    video_url: str
+    position: str = "last"  # "last", "first", or seconds as string/number
+    output_destination: Optional["OutputDestination"] = None
+
+
 class SuccessResponse(BaseModel):
     status: str = "ok"
     output: str
@@ -161,6 +168,12 @@ class MuxSpacesResponse(BaseModel):
     output_url: Optional[str]
 
 
+class ExtractFrameResponse(BaseModel):
+    status: str = "ok"
+    image_url: Optional[str] = None
+    image_data_url: Optional[str] = None
+
+
 # Pydantic v2: resolve forward refs where OutputDestination is referenced
 # before its class definition in this module.
 ConcatRequest.model_rebuild()
@@ -172,3 +185,4 @@ AudioRequest.model_rebuild()
 OverlayRequest.model_rebuild()
 WatermarkRequest.model_rebuild()
 EncodeRequest.model_rebuild()
+ExtractFrameRequest.model_rebuild()

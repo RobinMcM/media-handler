@@ -13,16 +13,19 @@ from app.schemas import (
     InstructionsResponse, EndpointInfo, LogsResponse,
     ConcatSpacesRequest,
     MuxRequest,
+    ExtractFrameRequest,
+    ExtractFrameResponse,
 )
 from app.ffmpeg import (
     build_concat_command, build_trim_command, build_scale_command,
     build_crop_command, build_rotate_command, build_audio_command,
     build_overlay_command, build_watermark_command, build_encode_command,
     build_mux_command,
+    build_extract_frame_command,
 )
 from app.docker_exec import execute_ffmpeg_command, extract_input_files
 from app.logger import get_sanitized_logs, log_request, log_success, log_error, log_docker_command
-from app.spaces import download_key_to_path
+from app.spaces import download_key_to_path, upload_path_to_key, get_public_url
 from app.download import download_url_to_path
 
 
@@ -226,6 +229,22 @@ async def get_instructions(api_key: str = Depends(verify_api_key)):
             success_response={
                 "stream": "HTTP 200 with file body",
                 "presigned": {"status": "ok", "output": "uploaded"}
+            },
+            error_response={"status": "error", "message": "Error description"}
+        ),
+        EndpointInfo(
+            name="extract-last-frame",
+            method="POST",
+            path="/api/ffmpeg/extract-last-frame",
+            description="Extract a single frame from a source video URL or Spaces key. Compatible aliases: /api/ffmpeg/extract_frame and /api/ffmpeg/last-frame.",
+            request_body={
+                "video_url": "https://... OR spaces/key/to/video.mp4",
+                "position": "optional: last|first|<seconds>; default last"
+            },
+            success_response={
+                "status": "ok",
+                "image_url": "https://public-image-url.jpg",
+                "image_data_url": None
             },
             error_response={"status": "error", "message": "Error description"}
         )
@@ -781,6 +800,146 @@ async def mux_video_audio(request: MuxRequest, api_key: str = Depends(verify_api
         guard.release_dedupe(dedupe_key)
         if not streaming_response and job_dir.exists():
             shutil.rmtree(job_dir, ignore_errors=True)
+
+
+async def _extract_last_frame_impl(request: ExtractFrameRequest, api_key: str) -> ExtractFrameResponse | ErrorResponse:
+    import hashlib
+    import json
+    import subprocess
+    import uuid
+    from app.valkey_guard import get_guard
+
+    source_ref = (request.video_url or "").strip()
+    if not source_ref:
+        return ErrorResponse(message="video_url is required")
+
+    position = (request.position or "last").strip() or "last"
+    guard = get_guard()
+    allowed, error_msg = guard.check_rate_limit(api_key)
+    if not allowed:
+        return ErrorResponse(message=error_msg)
+
+    dedupe_payload = {"video_url": source_ref, "position": position}
+    dedupe_key = hashlib.sha256(json.dumps(dedupe_payload, sort_keys=True).encode()).hexdigest()
+    acquired_dedupe, error_msg = guard.acquire_dedupe(dedupe_key)
+    if not acquired_dedupe:
+        return ErrorResponse(message=error_msg)
+
+    job_id = str(uuid.uuid4())
+    job_dir = Path("/tmp") / f"job-{job_id}"
+    input_name = "input.mp4"
+    output_name = "frame.jpg"
+    streaming_response = False
+    log_request("extract_last_frame", job_id)
+
+    try:
+        job_dir.mkdir(parents=True, exist_ok=True)
+        input_path = job_dir / input_name
+        output_path = job_dir / output_name
+
+        source_lower = source_ref.lower()
+        if source_lower.startswith("http://") or source_lower.startswith("https://"):
+            try:
+                download_url_to_path(source_ref, str(input_path), default_extension=".mp4")
+            except ValueError as e:
+                log_error(job_id, str(e))
+                return ErrorResponse(message=str(e))
+            except Exception as e:
+                log_error(job_id, f"Download failed: {str(e)}")
+                return ErrorResponse(message=f"Download failed: {str(e)}")
+        else:
+            if ".." in source_ref or source_ref.startswith("/"):
+                return ErrorResponse(message="Invalid video_url: cannot contain '..' or start with '/'")
+            ext = Path(source_ref).suffix.lower()
+            if ext and ext not in _MUX_VIDEO_EXTENSIONS:
+                return ErrorResponse(
+                    message=f"Invalid input file extension: {ext}. Allowed: {', '.join(sorted(_MUX_VIDEO_EXTENSIONS))}"
+                )
+            try:
+                download_key_to_path(source_ref, str(input_path))
+            except Exception as e:
+                log_error(job_id, f"Failed to download {source_ref}: {str(e)}")
+                return ErrorResponse(message=f"Failed to download input from Spaces: {str(e)}")
+
+        command = build_extract_frame_command(request, input_name=input_name, output_name=output_name)
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{job_dir}:/videos",
+            "media-handler"
+        ] + command
+        log_docker_command(job_id, docker_cmd)
+
+        acquired_slot, error_msg = guard.acquire_slot(job_id)
+        if not acquired_slot:
+            return ErrorResponse(message=error_msg)
+        try:
+            result = subprocess.run(
+                docker_cmd,
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+        finally:
+            guard.release_slot(job_id)
+
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            log_error(job_id, error_msg)
+            return ErrorResponse(message=f"FFmpeg frame extraction failed: {error_msg[:200]}")
+        if not output_path.exists():
+            log_error(job_id, "Output image does not exist after FFmpeg execution")
+            return ErrorResponse(message="Output image was not created by FFmpeg")
+        if output_path.stat().st_size == 0:
+            log_error(job_id, "Output image is empty")
+            return ErrorResponse(message="Output image is empty")
+
+        image_url = None
+        if request.output_destination and request.output_destination.presigned_put_url:
+            try:
+                upload_file_to_presigned_url(
+                    output_path,
+                    request.output_destination.presigned_put_url,
+                    content_type="image/jpeg",
+                )
+            except Exception as e:
+                log_error(job_id, f"Failed to upload to presigned URL: {str(e)}")
+                return ErrorResponse(message=f"Failed to upload output: {str(e)}")
+
+        spaces_key = f"frames/{job_id}/last-frame.jpg"
+        try:
+            upload_path_to_key(str(output_path), spaces_key, content_type="image/jpeg")
+            image_url = get_public_url(spaces_key)
+        except Exception as e:
+            log_error(job_id, f"Failed to upload frame to Spaces: {str(e)}")
+            return ErrorResponse(message=f"Failed to upload frame to Spaces: {str(e)}")
+
+        if not image_url:
+            return ErrorResponse(message="SPACES_PUBLIC_BASE_URL is not configured; cannot return image_url")
+
+        log_success(job_id, output_name)
+        return ExtractFrameResponse(status="ok", image_url=image_url, image_data_url=None)
+    except Exception as e:
+        log_error(job_id, str(e))
+        return ErrorResponse(message=f"Unexpected error: {str(e)}")
+    finally:
+        guard.release_dedupe(dedupe_key)
+        if not streaming_response and job_dir.exists():
+            shutil.rmtree(job_dir, ignore_errors=True)
+
+
+@app.post("/api/ffmpeg/extract-last-frame")
+async def extract_last_frame(request: ExtractFrameRequest, api_key: str = Depends(verify_api_key)):
+    return await _extract_last_frame_impl(request, api_key)
+
+
+@app.post("/api/ffmpeg/extract_frame")
+async def extract_frame_legacy(request: ExtractFrameRequest, api_key: str = Depends(verify_api_key)):
+    return await _extract_last_frame_impl(request, api_key)
+
+
+@app.post("/api/ffmpeg/last-frame")
+async def last_frame_legacy(request: ExtractFrameRequest, api_key: str = Depends(verify_api_key)):
+    return await _extract_last_frame_impl(request, api_key)
 
 
 @app.get("/health")

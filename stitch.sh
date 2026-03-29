@@ -592,10 +592,70 @@ case "$COMMAND" in
     
     echo "Mux successful: $OUTPUT ($OUTPUT_SIZE bytes)" >&2
     ;;
+
+  frame)
+    # Parse options: --position (last|first|<seconds>)
+    POSITION="last"
+
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --position)
+          POSITION="$2"
+          shift 2
+          ;;
+        *)
+          break
+          ;;
+      esac
+    done
+
+    if [ "$#" -ne 2 ]; then
+      echo "Error: frame requires input and output image files" >&2
+      exit 1
+    fi
+
+    INPUT="/videos/$1"
+    OUTPUT="/videos/$2"
+
+    if [ ! -f "$INPUT" ]; then
+      echo "Error: Input file not found: $INPUT" >&2
+      exit 1
+    fi
+
+    case "$POSITION" in
+      last)
+        # Seek from EOF to capture the final representative frame.
+        echo "Executing: ffmpeg -y -sseof -1 -i $INPUT -frames:v 1 -q:v 2 $OUTPUT" >&2
+        ffmpeg -y -sseof -1 -i "$INPUT" -frames:v 1 -q:v 2 "$OUTPUT"
+        ;;
+      first)
+        echo "Executing: ffmpeg -y -i $INPUT -frames:v 1 -q:v 2 $OUTPUT" >&2
+        ffmpeg -y -i "$INPUT" -frames:v 1 -q:v 2 "$OUTPUT"
+        ;;
+      *)
+        # Treat POSITION as seconds offset.
+        echo "Executing: ffmpeg -y -ss $POSITION -i $INPUT -frames:v 1 -q:v 2 $OUTPUT" >&2
+        ffmpeg -y -ss "$POSITION" -i "$INPUT" -frames:v 1 -q:v 2 "$OUTPUT"
+        ;;
+    esac
+
+    if [ ! -f "$OUTPUT" ]; then
+      echo "Error: Output image was not created: $OUTPUT" >&2
+      exit 1
+    fi
+
+    OUTPUT_SIZE=$(stat -f%z "$OUTPUT" 2>/dev/null || stat -c%s "$OUTPUT" 2>/dev/null || echo "0")
+    if [ "$OUTPUT_SIZE" -eq 0 ]; then
+      echo "Error: Output image is empty (0 bytes)" >&2
+      exit 1
+    fi
+
+    echo "Frame extraction successful: $OUTPUT ($OUTPUT_SIZE bytes)" >&2
+    ;;
     
   *)
     echo "Error: Unknown command: $COMMAND" >&2
-    echo "Available commands: concat, trim, scale, crop, rotate, mute, overlay, watermark, format, mux" >&2
+    echo "Available commands: concat, trim, scale, crop, rotate, mute, overlay, watermark, format, mux, frame" >&2
     exit 1
     ;;
 esac
