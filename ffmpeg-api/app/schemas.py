@@ -174,6 +174,17 @@ class ExtractFrameResponse(BaseModel):
     image_data_url: Optional[str] = None
 
 
+class AudioPeaksRequest(BaseModel):
+    input_key: str     # DO Spaces key of the source video
+    num_peaks: int = 400
+
+
+class AudioPeaksResponse(BaseModel):
+    status: str
+    peaks: Optional[List[float]] = None
+    message: Optional[str] = None
+
+
 # Pydantic v2: resolve forward refs where OutputDestination is referenced
 # before its class definition in this module.
 ConcatRequest.model_rebuild()

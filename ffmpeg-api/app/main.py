@@ -15,6 +15,8 @@ from app.schemas import (
     MuxRequest,
     ExtractFrameRequest,
     ExtractFrameResponse,
+    AudioPeaksRequest,
+    AudioPeaksResponse,
 )
 from app.ffmpeg import (
     build_concat_command, build_trim_command, build_scale_command,
@@ -955,6 +957,70 @@ async def last_frame_legacy(request: ExtractFrameRequest, api_key: str = Depends
         status_code = 400 if any(token in message.lower() for token in ["required", "invalid", "must use"]) else 502
         raise HTTPException(status_code=status_code, detail=message or "Frame extraction failed")
     return result
+
+
+@app.post("/api/ffmpeg/audio-peaks", response_model=AudioPeaksResponse)
+async def audio_peaks(req: AudioPeaksRequest, api_key: str = Depends(verify_api_key)):
+    """
+    Download video from DO Spaces, extract mono 8 kHz PCM audio via FFmpeg,
+    compute num_peaks amplitude peaks normalised to 0.0–1.0, return as JSON.
+    No output file is stored on server.
+    """
+    import struct
+    import subprocess
+    import uuid
+    import wave
+
+    job_id = str(uuid.uuid4())
+    job_dir = Path("/tmp") / f"job-{job_id}"
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    input_suffix = Path(req.input_key).suffix or ".mp4"
+    input_name = f"input{input_suffix}"
+    audio_name = "audio.wav"
+    input_path = str(job_dir / input_name)
+    audio_path = job_dir / audio_name
+
+    try:
+        try:
+            download_key_to_path(req.input_key, input_path)
+        except Exception as e:
+            return AudioPeaksResponse(status="error", message=f"Download failed: {e}")
+
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{job_dir}:/videos",
+            "media-handler",
+            "audio-extract", input_name, audio_name,
+        ]
+        result = subprocess.run(docker_cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0 or not audio_path.exists():
+            return AudioPeaksResponse(status="error", message=result.stderr or "FFmpeg audio extraction failed")
+
+        with wave.open(str(audio_path), "rb") as wf:
+            n_frames = wf.getnframes()
+            n_channels = wf.getnchannels()
+            raw = wf.readframes(n_frames)
+
+        total_samples = n_frames * n_channels
+        samples = struct.unpack(f"{total_samples}h", raw)
+        if n_channels > 1:
+            samples = samples[::n_channels]
+
+        num_peaks = req.num_peaks
+        block_size = max(1, len(samples) // num_peaks)
+        peaks: list[float] = []
+        for i in range(num_peaks):
+            block = samples[i * block_size: (i + 1) * block_size]
+            peak = max(abs(s) for s in block) / 32768.0 if block else 0.0
+            peaks.append(round(peak, 4))
+
+        return AudioPeaksResponse(status="ok", peaks=peaks)
+
+    except Exception as e:
+        return AudioPeaksResponse(status="error", message=str(e))
+    finally:
+        shutil.rmtree(job_dir, ignore_errors=True)
 
 
 @app.get("/health")

@@ -653,9 +653,41 @@ case "$COMMAND" in
     echo "Frame extraction successful: $OUTPUT ($OUTPUT_SIZE bytes)" >&2
     ;;
     
+  audio-extract)
+    # Arguments: input_video output_audio.wav
+    if [ "$#" -ne 2 ]; then
+      echo "Error: audio-extract requires input and output files" >&2
+      exit 1
+    fi
+
+    INPUT="/videos/$1"
+    OUTPUT="/videos/$2"
+
+    if [ ! -f "$INPUT" ]; then
+      echo "Error: Input file not found: $INPUT" >&2
+      exit 1
+    fi
+
+    echo "Executing: ffmpeg -y -i $INPUT -vn -ac 1 -ar 8000 -acodec pcm_s16le $OUTPUT" >&2
+    ffmpeg -y -i "$INPUT" -vn -ac 1 -ar 8000 -acodec pcm_s16le "$OUTPUT"
+
+    if [ ! -f "$OUTPUT" ]; then
+      echo "Error: Audio file was not created: $OUTPUT" >&2
+      exit 1
+    fi
+
+    OUTPUT_SIZE=$(stat -f%z "$OUTPUT" 2>/dev/null || stat -c%s "$OUTPUT" 2>/dev/null || echo "0")
+    if [ "$OUTPUT_SIZE" -eq 0 ]; then
+      echo "Error: Audio file is empty (0 bytes)" >&2
+      exit 1
+    fi
+
+    echo "Audio extraction successful: $OUTPUT ($OUTPUT_SIZE bytes)" >&2
+    ;;
+
   *)
     echo "Error: Unknown command: $COMMAND" >&2
-    echo "Available commands: concat, trim, scale, crop, rotate, mute, overlay, watermark, format, mux, frame" >&2
+    echo "Available commands: concat, trim, scale, crop, rotate, mute, overlay, watermark, format, mux, frame, audio-extract" >&2
     exit 1
     ;;
 esac
