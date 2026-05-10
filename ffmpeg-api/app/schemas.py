@@ -175,7 +175,8 @@ class ExtractFrameResponse(BaseModel):
 
 
 class AudioPeaksRequest(BaseModel):
-    input_key: str     # DO Spaces key of the source video
+    input_key: Optional[str] = None   # DO Spaces key (direct download)
+    input_url: Optional[str] = None   # Presigned GET URL (preferred)
     num_peaks: int = 400
 
 

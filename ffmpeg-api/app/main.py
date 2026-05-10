@@ -962,7 +962,7 @@ async def last_frame_legacy(request: ExtractFrameRequest, api_key: str = Depends
 @app.post("/api/ffmpeg/audio-peaks", response_model=AudioPeaksResponse)
 async def audio_peaks(req: AudioPeaksRequest, api_key: str = Depends(verify_api_key)):
     """
-    Download video from DO Spaces, extract mono 8 kHz PCM audio via FFmpeg,
+    Download video (via presigned URL or Spaces key), extract mono 8 kHz PCM audio via FFmpeg,
     compute num_peaks amplitude peaks normalised to 0.0–1.0, return as JSON.
     No output file is stored on server.
     """
@@ -971,11 +971,15 @@ async def audio_peaks(req: AudioPeaksRequest, api_key: str = Depends(verify_api_
     import uuid
     import wave
 
+    if not req.input_key and not req.input_url:
+        return AudioPeaksResponse(status="error", message="input_key or input_url required")
+
     job_id = str(uuid.uuid4())
     job_dir = Path("/tmp") / f"job-{job_id}"
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    input_suffix = Path(req.input_key).suffix or ".mp4"
+    source_ref = req.input_url or req.input_key
+    input_suffix = Path(source_ref.split("?")[0]).suffix or ".mp4"
     input_name = f"input{input_suffix}"
     audio_name = "audio.wav"
     input_path = str(job_dir / input_name)
@@ -983,7 +987,15 @@ async def audio_peaks(req: AudioPeaksRequest, api_key: str = Depends(verify_api_
 
     try:
         try:
-            download_key_to_path(req.input_key, input_path)
+            if req.input_url:
+                download_url_to_path(
+                    req.input_url,
+                    input_path,
+                    timeout=7200,
+                    max_bytes=10 * 1024 * 1024 * 1024,
+                )
+            else:
+                download_key_to_path(req.input_key, input_path)
         except Exception as e:
             return AudioPeaksResponse(status="error", message=f"Download failed: {e}")
 
